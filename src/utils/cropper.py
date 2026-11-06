@@ -18,7 +18,7 @@ from .crop import (
 )
 from .io import contiguous
 from .rprint import rlog as log
-from .face_analysis_diy import FaceAnalysisDIY
+from .face_analysis_mediapipe import FaceAnalysisMediaPipe
 from .human_landmark_runner import LandmarkRunner as HumanLandmark
 
 def make_abs_path(fn):
@@ -46,26 +46,13 @@ class Cropper(object):
         flag_force_cpu = kwargs.get("flag_force_cpu", False)
         if flag_force_cpu:
             device = "cpu"
-            face_analysis_wrapper_provider = ["CPUExecutionProvider"]
         else:
             try:
-                if torch.backends.mps.is_available():
-                    # Shape inference currently fails with CoreMLExecutionProvider
-                    # for the retinaface model
-                    device = "mps"
-                    face_analysis_wrapper_provider = ["CPUExecutionProvider"]
-                else:
-                    device = "cuda"
-                    face_analysis_wrapper_provider = ["CUDAExecutionProvider"]
+                device = "mps" if torch.backends.mps.is_available() else "cuda"
             except:
-                    device = "cuda"
-                    face_analysis_wrapper_provider = ["CUDAExecutionProvider"]
-        self.face_analysis_wrapper = FaceAnalysisDIY(
-                    name="buffalo_l",
-                    root=self.crop_cfg.insightface_root,
-                    providers=face_analysis_wrapper_provider,
-                )
-        self.face_analysis_wrapper.prepare(ctx_id=device_id, det_size=(512, 512), det_thresh=self.crop_cfg.det_thresh)
+                device = "cuda"
+        # MediaPipe Face Mesh (Apache-2.0) instead of InsightFace, whose models are non-commercial only.
+        self.face_analysis_wrapper = FaceAnalysisMediaPipe(det_thresh=self.crop_cfg.det_thresh)
         self.face_analysis_wrapper.warmup()
 
         self.human_landmark_runner = HumanLandmark(
@@ -98,7 +85,6 @@ class Cropper(object):
         if self.image_type == "human_face":
             src_face = self.face_analysis_wrapper.get(
                 img_bgr,
-                flag_do_landmark_2d_106=True,
                 direction=crop_cfg.direction,
                 max_face_num=crop_cfg.max_face_num,
             )
@@ -111,7 +97,7 @@ class Cropper(object):
 
             # NOTE: temporarily only pick the first face, to support multiple face in the future
             src_face = src_face[0]
-            lmk = src_face.landmark_2d_106  # this is the 106 landmarks from insightface
+            lmk = src_face.landmark_2d  # 68 initial landmarks from MediaPipe
         else:
             tmp_dct = {
                 'animal_face_9': 'animal_face',
@@ -130,7 +116,7 @@ class Cropper(object):
         # crop the face
         ret_dct = crop_image(
             img_rgb,  # ndarray
-            lmk,  # 106x2 or Nx2
+            lmk,  # 68x2 or Nx2
             dsize=crop_cfg.dsize,
             scale=crop_cfg.scale,
             vx_ratio=crop_cfg.vx_ratio,
@@ -154,7 +140,6 @@ class Cropper(object):
         direction = kwargs.get("direction", "large-small")
         src_face = self.face_analysis_wrapper.get(
             contiguous(img_rgb_[..., ::-1]),  # convert to BGR
-            flag_do_landmark_2d_106=True,
             direction=direction,
         )
         if len(src_face) == 0:
@@ -163,7 +148,7 @@ class Cropper(object):
         elif len(src_face) > 1:
             log(f"More than one face detected in the image, only pick one face by rule {direction}.")
         src_face = src_face[0]
-        lmk = src_face.landmark_2d_106
+        lmk = src_face.landmark_2d
         lmk = self.human_landmark_runner.run(img_rgb_, lmk)
 
         return lmk
@@ -177,8 +162,7 @@ class Cropper(object):
             if idx == 0 or trajectory.start == -1:
                 src_face = self.face_analysis_wrapper.get(
                     contiguous(frame_rgb[..., ::-1]),
-                    flag_do_landmark_2d_106=True,
-                    direction=crop_cfg.direction,
+                        direction=crop_cfg.direction,
                     max_face_num=crop_cfg.max_face_num,
                 )
                 if len(src_face) == 0:
@@ -187,7 +171,7 @@ class Cropper(object):
                 elif len(src_face) > 1:
                     log(f"More than one face detected in the source frame_{idx}, only pick one face by rule {direction}.")
                 src_face = src_face[0]
-                lmk = src_face.landmark_2d_106
+                lmk = src_face.landmark_2d
                 lmk = self.human_landmark_runner.run(frame_rgb, lmk)
                 trajectory.start, trajectory.end = idx, idx
             else:
@@ -200,7 +184,7 @@ class Cropper(object):
             # crop the face
             ret_dct = crop_image(
                 frame_rgb,  # ndarray
-                lmk,  # 106x2 or Nx2
+                lmk,  # 68x2 or Nx2
                 dsize=crop_cfg.dsize,
                 scale=crop_cfg.scale,
                 vx_ratio=crop_cfg.vx_ratio,
@@ -230,8 +214,7 @@ class Cropper(object):
             if idx == 0 or trajectory.start == -1:
                 src_face = self.face_analysis_wrapper.get(
                     contiguous(frame_rgb[..., ::-1]),
-                    flag_do_landmark_2d_106=True,
-                    direction=direction,
+                        direction=direction,
                 )
                 if len(src_face) == 0:
                     log(f"No face detected in the frame #{idx}")
@@ -239,7 +222,7 @@ class Cropper(object):
                 elif len(src_face) > 1:
                     log(f"More than one face detected in the driving frame_{idx}, only pick one face by rule {direction}.")
                 src_face = src_face[0]
-                lmk = src_face.landmark_2d_106
+                lmk = src_face.landmark_2d
                 lmk = self.human_landmark_runner.run(frame_rgb, lmk)
                 trajectory.start, trajectory.end = idx, idx
             else:
@@ -291,8 +274,7 @@ class Cropper(object):
             if idx == 0 or trajectory.start == -1:
                 src_face = self.face_analysis_wrapper.get(
                     contiguous(frame_rgb_crop[..., ::-1]),  # convert to BGR
-                    flag_do_landmark_2d_106=True,
-                    direction=direction,
+                        direction=direction,
                 )
                 if len(src_face) == 0:
                     log(f"No face detected in the frame #{idx}")
@@ -300,7 +282,7 @@ class Cropper(object):
                 elif len(src_face) > 1:
                     log(f"More than one face detected in the driving frame_{idx}, only pick one face by rule {direction}.")
                 src_face = src_face[0]
-                lmk = src_face.landmark_2d_106
+                lmk = src_face.landmark_2d
                 lmk = self.human_landmark_runner.run(frame_rgb_crop, lmk)
                 trajectory.start, trajectory.end = idx, idx
             else:
